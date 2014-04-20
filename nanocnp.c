@@ -44,6 +44,16 @@ struct ncnp_struct_meta
 	uint16_t n_pointers;
 };
 
+struct ncnp_list_meta
+{
+	struct ncnp_rbuf ptr_target_area;
+	ncnp_word_rptr data;
+	unsigned int elemtype : 3;
+	unsigned int list_words : 29;
+	uint32_t list_elems;
+	uint32_t stride_in_bits;
+};
+
 static uint32_t ncnp_ptrval_type(uint64_t ptrval)
 {
 	return ptrval & 3;
@@ -160,6 +170,106 @@ int ncnp_decode_structptr(struct ncnp_struct_meta *meta,
 	return 0;
 }
 
+int ncnp_decode_listptr(struct ncnp_list_meta *meta,
+			ncnp_word_rptr pptr,
+			struct ncnp_rbuf targetbuf)
+{
+	uint64_t ptrval = ncnp_load_word(pptr);
+
+	if (ncnp_ptrval_type(ptrval) != 1)
+		return -1;  /* Root pointer must be a struct pointer */
+
+	/*
+	 * This cannot cause undefined behavior: pptr and targetbuf.start
+	 * are pointers into the same array.  Furthermore, the result
+	 * is between -2^29 and 2^29, since the maximum length of the
+	 * array is 2^29 words.
+	 */
+	int32_t offset_to_start = targetbuf.start - pptr;
+	int32_t offset_to_end = targetbuf.end - pptr;
+
+	uint32_t total_words, list_elems, stride_in_bits;
+	unsigned int elemtype = ncnp_listptrval_elemtype(ptrval);
+	switch (elemtype) {
+	case 0: /* void */
+		total_words = 0;
+		stride_in_bits = 0;
+		break;
+
+	case 1: /* bits */
+		total_words = (ncnp_listptrval_len(ptrval) + 63) / 64;
+		stride_in_bits = 1;
+		break;
+
+	case 2: /* bytes */
+		total_words = (ncnp_listptrval_len(ptrval) + 7) / 8;
+		stride_in_bits = 8;
+		break;
+
+	case 3: /* 2-byte objects */
+		total_words = (ncnp_listptrval_len(ptrval) + 3) / 4;
+		stride_in_bits = 16;
+		break;
+
+	case 4: /* 4-byte objects */
+		stride_in_bits = 32;
+		total_words = (ncnp_listptrval_len(ptrval) + 1) / 2;
+		break;
+
+	case 5: /* non-pointer words */
+	case 6: /* pointers */
+		stride_in_bits = 64;
+		total_words = ncnp_listptrval_len(ptrval);
+		break;
+
+	case 7: /* composite */
+		/* we'll fill in stride_in_bits later */
+		total_words = ncnp_listptrval_len(ptrval) + 1;
+		break;
+	}
+
+	/* These cannot overflow; none of the fields are large enough. */
+	int32_t data_start = 1 + ncnp_ptrval_offset(ptrval);
+	int32_t data_end = data_start + total_words;
+
+	if ((uint32_t)(data_start - offset_to_start) > (offset_to_end - offset_to_start))
+		return -1;  /* The target starts out of bounds. */
+	if ((uint32_t)(data_end - offset_to_start) > (offset_to_end - offset_to_start))
+		return -1;  /* The target ends out of bounds. */
+
+	/* Handle the composite case */
+	int32_t list_start;
+	uint32_t list_words;
+	if (elemtype >= 7) {
+		uint64_t tagval = ncnp_load_word(pptr + data_start);
+		if (ncnp_ptrval_type(tagval) != 0)
+			return -1;  /* This could indicate a matrix some day. */
+		list_elems = ncnp_ptrval_offset(tagval);
+		stride_in_bits = 64 * (ncnp_structptrval_n_data_words(tagval) +
+				       ncnp_structptrval_n_pointers(tagval));
+
+		list_start = data_start + 1;
+		list_words = total_words - 1;
+
+		if ((uint64_t)stride_in_bits * (uint64_t)list_elems !=
+		    (uint64_t)list_words * 64)
+			return -1;  /* List tag is inconsistent. */
+	} else {
+		list_start = data_start;
+		list_elems = ncnp_listptrval_len(ptrval);
+		list_words = total_words;
+	}
+
+	meta->ptr_target_area = targetbuf;
+	meta->data = pptr + list_start;
+	meta->list_words = list_words;
+	meta->list_elems = list_elems;
+	meta->stride_in_bits = stride_in_bits;
+	meta->elemtype = elemtype;
+
+	return 0;
+}
+
 int ncnp_decode_root(struct ncnp_struct_meta *meta,
 		     struct ncnp_rbuf in)
 {
@@ -220,9 +330,16 @@ void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level
 				ncnp_dump_recursive(f, &obj, level + 1);
 			}
 		} else if (type == 1) {
-			fprintf(f, "%*sLIST, type %u, len %u\n", level, "",
-				ncnp_listptrval_elemtype(ptrval),
-				ncnp_listptrval_len(ptrval));
+			struct ncnp_list_meta list;
+			if (ncnp_decode_listptr(&list, pptr,
+						meta->ptr_target_area) != 0) {
+				fprintf(f, "%*sbad listptr\n", level, "");
+			} else {
+				fprintf(f, "%*sLIST, len %u, %u words, stride %u bits\n", level, "",
+					list.list_elems,
+					list.list_words,
+					list.stride_in_bits);
+			}
 		} else if (type == 2) {
 			fprintf(f, "%*sFARPTR\n", level, "");
 		} else {
