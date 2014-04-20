@@ -94,14 +94,12 @@ int ncnp_decode_root(struct ncnp_decoded_object_header *out,
 		return -1;
 
 	uint64_t ptrval = ncnp_load_word(in.start);
-	uint32_t offset_and_type = (uint32_t)ptrval;
-	if ((offset_and_type & 0x3) != 0)
+	if ((ptrval & 0x3) != 0)
 		return -1;  /* Root pointer must be a struct pointer */
 
+	uint32_t offset = (uint32_t)ptrval >> 2;
 	uint16_t n_data_words = (uint16_t)(ptrval >> 32);
 	uint16_t n_pointers = (uint16_t)(ptrval >> 48);
-
-	uint32_t offset = offset_and_type >> 2;
 
 	/* This cannot overflow; it is bounded by 2^30 + 2^17 + 1. */
 	uint32_t len_needed = 1 + offset + n_data_words + n_pointers;
