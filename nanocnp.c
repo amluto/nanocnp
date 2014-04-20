@@ -6,8 +6,10 @@
 #include <stdio.h>
 #include <stdalign.h>
 
-// #undef alignas
-// #define alignas(x)
+#ifdef __clang__
+# undef alignas
+# define alignas(x)
+#endif
 
 struct ncnp_word
 {
