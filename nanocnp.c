@@ -170,6 +170,21 @@ int ncnp_decode_structptr(struct ncnp_struct_meta *meta,
 	return 0;
 }
 
+struct ncnp_list_type
+{
+	unsigned int stride_in_bits;
+};
+
+static struct ncnp_list_type list_types[] = {
+	{0},
+	{1},
+	{8},
+	{16},
+	{32},
+	{64},
+	{64},
+};
+
 int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 			ncnp_word_rptr pptr,
 			struct ncnp_rbuf targetbuf)
@@ -190,42 +205,15 @@ int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 
 	uint32_t total_words, list_elems, stride_in_bits;
 	unsigned int elemtype = ncnp_listptrval_elemtype(ptrval);
-	switch (elemtype) {
-	case 0: /* void */
-		total_words = 0;
-		stride_in_bits = 0;
-		break;
-
-	case 1: /* bits */
-		total_words = (ncnp_listptrval_len(ptrval) + 63) / 64;
-		stride_in_bits = 1;
-		break;
-
-	case 2: /* bytes */
-		total_words = (ncnp_listptrval_len(ptrval) + 7) / 8;
-		stride_in_bits = 8;
-		break;
-
-	case 3: /* 2-byte objects */
-		total_words = (ncnp_listptrval_len(ptrval) + 3) / 4;
-		stride_in_bits = 16;
-		break;
-
-	case 4: /* 4-byte objects */
-		stride_in_bits = 32;
-		total_words = (ncnp_listptrval_len(ptrval) + 1) / 2;
-		break;
-
-	case 5: /* non-pointer words */
-	case 6: /* pointers */
-		stride_in_bits = 64;
-		total_words = ncnp_listptrval_len(ptrval);
-		break;
-
-	case 7: /* composite */
+	if (elemtype != 7) {
+		stride_in_bits = list_types[elemtype].stride_in_bits;
+		/* 2^29 words is more than 2^32 bits. */
+		total_words =
+			((uint64_t)ncnp_listptrval_len(ptrval) * stride_in_bits + 63) /
+			64;
+	} else {
 		/* we'll fill in stride_in_bits later */
 		total_words = ncnp_listptrval_len(ptrval) + 1;
-		break;
 	}
 
 	/* These cannot overflow; none of the fields are large enough. */
