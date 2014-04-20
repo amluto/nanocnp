@@ -36,14 +36,33 @@ struct ncnp_object_size
 	uint32_t val;  /* (ptrwords << 16) | datawords */
 };
 
-struct ncnp_decoded_object_header
+struct ncnp_struct_meta
 {
 	struct ncnp_rbuf ptr_target_area;
-	ncnp_word_rptr first_pointer;
+	ncnp_word_rptr data;
 	uint16_t n_data_words;
 	uint16_t n_pointers;
-	uint32_t pad1;
 };
+
+static uint32_t ncnp_ptrval_type(uint64_t ptrval)
+{
+	return ptrval & 3;
+}
+
+static uint32_t ncnp_structptrval_offset(uint64_t ptrval)
+{
+	return (uint32_t)((int32_t)(ptrval & 0xffffffff) >> 2);
+}
+
+static uint16_t ncnp_structptrval_n_data_words(uint64_t ptrval)
+{
+	return (uint16_t)(ptrval >> 32);
+}
+
+static uint16_t ncnp_structptrval_n_pointers(uint64_t ptrval)
+{
+	return (uint16_t)(ptrval >> 48);
+}
 
 void ncnp_decode_data(struct ncnp_word *data_out,
 		      uint16_t n_words_out,
@@ -86,55 +105,85 @@ static uint64_t ncnp_load_word(ncnp_word_rptr p)
 	return ret.val;
 }
 
-int ncnp_decode_root(struct ncnp_decoded_object_header *out,
-		     struct ncnp_rbuf in)
+/*
+ * This does two things.  It valides a structptr and it decodes everything
+ * except the data.  Once you've called this and checked the return value,
+ * though, it's safe to look at the data area without further bounds
+ * checking.
+ */
+int ncnp_decode_structptr(struct ncnp_struct_meta *meta,
+			  ncnp_word_rptr pptr,
+			  struct ncnp_rbuf targetbuf)
 {
-	size_t total_len = in.end - in.start;
-	if (total_len < 1)
-		return -1;
+	uint64_t ptrval = ncnp_load_word(pptr);
 
-	uint64_t ptrval = ncnp_load_word(in.start);
-	if ((ptrval & 0x3) != 0)
+	if (ncnp_ptrval_type(ptrval) != 0)
 		return -1;  /* Root pointer must be a struct pointer */
 
-	uint32_t offset = (uint32_t)ptrval >> 2;
-	uint16_t n_data_words = (uint16_t)(ptrval >> 32);
-	uint16_t n_pointers = (uint16_t)(ptrval >> 48);
+	/*
+	 * This cannot cause undefined behavior: pptr and targetbuf.start
+	 * are pointers into the same array.  Furthermore, the result
+	 * is between -2^29 and 2^29, since the maximum length of the
+	 * array is 2^29 words.
+	 */
+	int32_t offset_to_start = targetbuf.start - pptr;
+	int32_t offset_to_end = targetbuf.end - pptr;
 
-	/* This cannot overflow; it is bounded by 2^30 + 2^17 + 1. */
-	uint32_t len_needed = 1 + offset + n_data_words + n_pointers;
-	if (len_needed > in.end - in.start)
-		return -1;  /* The pointer points out of bounds. */
+	/* These cannot overflow; none of the fields are large enough. */
+	int32_t obj_start = 1 + ncnp_structptrval_offset(ptrval);
+	int32_t ptr_start = obj_start + ncnp_structptrval_n_data_words(ptrval);
+	int32_t obj_end = ptr_start + ncnp_structptrval_n_pointers(ptrval);
 
-	ncnp_decode_data((struct ncnp_word *)(out + 1),
-			 out->n_data_words,
-			 in.start + offset + 1,
-			 n_data_words);
+	if ((uint32_t)(obj_start - offset_to_start) > offset_to_end)
+		return -1;  /* The target starts out of bounds. */
+	if ((uint32_t)(obj_end - offset_to_start) > offset_to_end)
+		return -1;  /* The target ends out of bounds. */
 
-	out->ptr_target_area = in;
-	out->first_pointer = in.start + 1 + offset + n_data_words;
-	out->n_pointers = n_pointers;
+	meta->ptr_target_area = targetbuf;
+	meta->data = pptr + obj_start;
+	meta->n_data_words = ncnp_structptrval_n_data_words(ptrval);
+	meta->n_pointers = ncnp_structptrval_n_pointers(ptrval);
 
 	return 0;
 }
 
-void ncnp_dump_object(FILE *f, const struct ncnp_decoded_object_header *hdr)
+int ncnp_decode_root(struct ncnp_struct_meta *meta,
+		     struct ncnp_rbuf in)
 {
-	const struct ncnp_word *words = (const struct ncnp_word *)(hdr + 1);
+	int ret;
+	size_t total_len = in.end - in.start;
+	if (total_len < 1)
+		return -1;
 
-	fprintf(f, "Object, %d data words, %d pointers:\n",
-		hdr->n_data_words, (int)hdr->n_pointers);
+	ret = ncnp_decode_structptr(meta, in.start, in);
+	if (ret == -1)
+		return -1;
 
-	for (size_t i = 0; i < hdr->n_data_words; i++)
+/*
+	ncnp_decode_data((struct ncnp_word *)(out + 1),
+			 out->n_data_words,
+			 in.start + offset + 1,
+			 n_data_words);
+*/
+
+	return 0;
+}
+
+void ncnp_dump_struct(FILE *f, const struct ncnp_struct_meta *meta)
+{
+	fprintf(f, "Struct, %d data words, %d pointers:\n",
+		meta->n_data_words, (int)meta->n_pointers);
+
+	for (size_t i = 0; i < meta->n_data_words; i++)
 		fprintf(f, "  0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-			(int)words[i].bytes[7],
-			(int)words[i].bytes[6],
-			(int)words[i].bytes[5],
-			(int)words[i].bytes[4],
-			(int)words[i].bytes[3],
-			(int)words[i].bytes[2],
-			(int)words[i].bytes[1],
-			(int)words[i].bytes[0]);
+			(int)meta->data[i].bytes[7],
+			(int)meta->data[i].bytes[6],
+			(int)meta->data[i].bytes[5],
+			(int)meta->data[i].bytes[4],
+			(int)meta->data[i].bytes[3],
+			(int)meta->data[i].bytes[2],
+			(int)meta->data[i].bytes[1],
+			(int)meta->data[i].bytes[0]);
 }
 
 int main()
@@ -157,16 +206,15 @@ int main()
 		errx(1, "Input length is not a multiple of 8\n");
 
 	struct foo {
-		struct ncnp_decoded_object_header hdr;
+		struct ncnp_struct_meta meta;
 		struct ncnp_word data[2];
 	} foo;
-	foo.hdr.n_data_words = 2;
 	struct ncnp_rbuf in = {(struct ncnp_word *)buf,
 			       (struct ncnp_word *)(buf + len)};
-	if (ncnp_decode_root(&foo.hdr, in) != 0)
+	if (ncnp_decode_root(&foo.meta, in) != 0)
 		errx(1, "ncnp_decode_root");
 
-	ncnp_dump_object(stdout, &foo.hdr);
+	ncnp_dump_struct(stdout, &foo.meta);
 
 	return 0;
 }
