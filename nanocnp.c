@@ -40,7 +40,7 @@ struct ncnp_struct_meta
 {
 	struct ncnp_rbuf ptr_target_area;
 	ncnp_word_rptr data;
-	uint16_t n_data_words;
+	uint16_t n_data_words;  /* TODO: Should be n_data_bits, I think. */
 	uint16_t n_pointers;
 };
 
@@ -49,9 +49,12 @@ struct ncnp_list_meta
 	struct ncnp_rbuf ptr_target_area;
 	ncnp_word_rptr data;
 	unsigned int elemtype : 3;
-	unsigned int list_words : 29;
-	uint32_t list_elems;
+	uint32_t list_elems : 29;
 	uint32_t stride_in_bits;
+
+	/* Only valid if elemtype == 7. */
+	uint16_t composite_n_data_words;
+	uint16_t composite_n_pointers;
 };
 
 static uint32_t ncnp_ptrval_type(uint64_t ptrval)
@@ -242,6 +245,9 @@ int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 		if ((uint64_t)stride_in_bits * (uint64_t)list_elems !=
 		    (uint64_t)list_words * 64)
 			return -1;  /* List tag is inconsistent. */
+
+		meta->composite_n_data_words = ncnp_structptrval_n_data_words(tagval);
+		meta->composite_n_pointers = ncnp_structptrval_n_pointers(tagval);
 	} else {
 		list_start = data_start;
 		list_elems = ncnp_listptrval_len(ptrval);
@@ -250,10 +256,45 @@ int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 
 	meta->ptr_target_area = targetbuf;
 	meta->data = pptr + list_start;
-	meta->list_words = list_words;
 	meta->list_elems = list_elems;
 	meta->stride_in_bits = stride_in_bits;
 	meta->elemtype = elemtype;
+
+	return 0;
+}
+
+
+int ncnp_get_list_element(struct ncnp_struct_meta *meta,
+			  struct ncnp_word *copy_dest,
+			  uint16_t copy_n_data_words,
+			  const struct ncnp_list_meta *list,
+			  size_t i)
+{
+	if (i >= list->list_elems)
+		return -1;
+
+	meta->ptr_target_area = list->ptr_target_area;
+
+	if (list->elemtype == 1) {
+		// Not yet implemented
+		return -1;
+	} else if (list->elemtype == 6) {
+		meta->data = list->data + i;
+		meta->n_data_words = 0;
+		meta->n_pointers = 1;
+	} else if (list->elemtype == 7) {
+		meta->n_data_words = list->composite_n_data_words;
+		meta->n_pointers = list->composite_n_pointers;
+		meta->data = list->data + i * (list->stride_in_bits / 64);
+		ncnp_decode_data(copy_dest, copy_n_data_words,
+				 meta->data, meta->n_data_words);
+	} else {
+		/* Elements are byte-aligned and contain no pointers. */
+		meta->data = (void *)0;
+		meta->n_data_words = 1;  /* A lie. */
+		meta->n_pointers = 0;
+		/* TODO: Copy it. */
+	}
 
 	return 0;
 }
@@ -286,17 +327,22 @@ void ncnp_dump_struct(FILE *f, const struct ncnp_struct_meta *meta, int level)
 		level, "",
 		meta->n_data_words, (int)meta->n_pointers);
 
-	for (size_t i = 0; i < meta->n_data_words; i++)
-		fprintf(f, "%*s0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-			level, "",
-			(int)meta->data[i].bytes[7],
-			(int)meta->data[i].bytes[6],
-			(int)meta->data[i].bytes[5],
-			(int)meta->data[i].bytes[4],
-			(int)meta->data[i].bytes[3],
-			(int)meta->data[i].bytes[2],
-			(int)meta->data[i].bytes[1],
-			(int)meta->data[i].bytes[0]);
+	if (!meta->data) {
+		fprintf(f, "%*s[cannot display data portion]\n",
+			level, "");
+	} else {
+		for (size_t i = 0; i < meta->n_data_words; i++)
+			fprintf(f, "%*s0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+				level, "",
+				(int)meta->data[i].bytes[7],
+				(int)meta->data[i].bytes[6],
+				(int)meta->data[i].bytes[5],
+				(int)meta->data[i].bytes[4],
+				(int)meta->data[i].bytes[3],
+				(int)meta->data[i].bytes[2],
+				(int)meta->data[i].bytes[1],
+				(int)meta->data[i].bytes[0]);
+	}
 }
 
 void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level)
@@ -323,10 +369,21 @@ void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level
 						meta->ptr_target_area) != 0) {
 				fprintf(f, "%*sbad listptr\n", level, "");
 			} else {
-				fprintf(f, "%*sLIST, len %u, %u words, stride %u bits\n", level, "",
+				fprintf(f, "%*sLIST, type %d, len %u, stride %u bits\n", level, "",
+					list.elemtype,
 					list.list_elems,
-					list.list_words,
 					list.stride_in_bits);
+				for (int i = 0; i < list.list_elems; i++) {
+					if (i != 0)
+						fprintf(f, "\n");
+					struct ncnp_struct_meta obj;
+					if (ncnp_get_list_element(&obj, (void *)0,
+								  0, &list, i) == 0) {
+						ncnp_dump_recursive(f, &obj, level + 1);
+					} else {
+						fprintf(f, "%*s [cannot display]\n", level, "");
+					}
+				}
 			}
 		} else if (type == 2) {
 			fprintf(f, "%*sFARPTR\n", level, "");
