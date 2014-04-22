@@ -235,12 +235,17 @@ int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 		uint64_t tagval = ncnp_load_word(pptr + data_start);
 		if (ncnp_ptrval_type(tagval) != 0)
 			return -1;  /* This could indicate a matrix some day. */
-		list_elems = ncnp_ptrval_offset(tagval);
-		stride_in_bits = 64 * (ncnp_structptrval_n_data_words(tagval) +
-				       ncnp_structptrval_n_pointers(tagval));
+		/* Ignore ncnp_ptrval_offset(tagval); it is reserved. */
 
 		list_start = data_start + 1;
 		list_words = total_words - 1;
+		uint32_t stride_in_words =
+			(ncnp_structptrval_n_data_words(tagval) +
+			 ncnp_structptrval_n_pointers(tagval));
+		list_elems = list_words / stride_in_words;
+		if (list_words % stride_in_words != 0)
+			return -1;  /* Invalid! */
+		stride_in_bits = 64 * stride_in_words;
 
 		if ((uint64_t)stride_in_bits * (uint64_t)list_elems !=
 		    (uint64_t)list_words * 64)
