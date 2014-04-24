@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,6 +56,37 @@ struct ncnp_list_meta
 	uint16_t n_full_data_words;
 	uint16_t n_pointers;
 };
+
+static inline uint64_t ncnp_load_word(ncnp_word_rptr p)
+{
+	/* Unfortunately, neither gcc nor clang can optimize this:
+
+	return ((uint64_t)p.bytes[0] |
+		(uint64_t)p.bytes[1] << 8 |
+		(uint64_t)p.bytes[2] << 16 |
+		(uint64_t)p.bytes[3] << 24 |
+		(uint64_t)p.bytes[4] << 32 |
+		(uint64_t)p.bytes[5] << 40 |
+		(uint64_t)p.bytes[6] << 48 |
+		(uint64_t)p.bytes[7] << 56);
+	*/
+
+	/*
+	 * This does not invoke undefined behavior, and it is correct
+	 * on any little-endian architecture.
+	 */
+	union {
+		uint64_t val;
+		unsigned char bytes[8];
+	} ret;
+	memcpy(&ret.bytes, p, 8);
+	return ret.val;
+}
+
+static uint32_t ncnp_ptrval_type(uint64_t ptrval)
+{
+	return ptrval & 3;
+}
 
 int ncnp_decode_structptr(struct ncnp_struct_meta *meta,
 			  ncnp_word_rptr pptr,
