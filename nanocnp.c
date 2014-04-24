@@ -1,3 +1,4 @@
+#include "nanocnp.h"
 #include <stdint.h>
 #include <unistd.h>
 #include <stdbool.h>
@@ -11,52 +12,6 @@
 # undef alignas
 # define alignas(x)
 #endif
-
-struct ncnp_word
-{
-	unsigned char bytes[8];
-} __attribute__((aligned(8)));
-
-typedef struct ncnp_word const *ncnp_word_rptr;
-
-struct ncnp_rbuf
-{
-	/* end points one past the last word. */
-	const struct ncnp_word *start, *end;
-};
-
-struct ncnp_pointer
-{
-	/* opaque */
-	unsigned char bytes[8];
-};
-
-struct ncnp_object_size
-{
-	/* This is a silly microoptimization */
-	uint32_t val;  /* (ptrwords << 16) | datawords */
-};
-
-struct ncnp_struct_meta
-{
-	struct ncnp_rbuf ptr_target_area;
-	ncnp_word_rptr data;
-	uint16_t n_data_words;  /* TODO: Should be n_data_bits, I think. */
-	uint16_t n_pointers;
-};
-
-struct ncnp_list_meta
-{
-	struct ncnp_rbuf ptr_target_area;
-	ncnp_word_rptr data;
-	unsigned int elemtype : 3;
-	uint32_t list_elems : 29;
-	uint32_t nott1_stride_in_bytes;
-
-	/* Only valid if elemtype >= 5. */
-	uint16_t t567_n_data_words;
-	uint16_t t567_n_pointers;
-};
 
 static void ncnp_assert(bool condition)
 {
@@ -94,10 +49,10 @@ static uint32_t ncnp_listptrval_len(uint64_t ptrval)
 	return (uint32_t)(ptrval >> 35);
 }
 
-void ncnp_decode_data(struct ncnp_word *data_out,
-		      uint16_t n_words_out,
-		      const struct ncnp_word *data_in,
-		      uint16_t n_words_in)
+static void ncnp_decode_data(struct ncnp_word *data_out,
+			     uint16_t n_words_out,
+			     const struct ncnp_word *data_in,
+			     uint16_t n_words_in)
 {
 	/* TODO: Handle endianness here? */
 	if (n_words_out <= n_words_in) {
@@ -362,8 +317,8 @@ int ncnp_list_get_element(struct ncnp_struct_meta *meta,
 	return 0;
 }
 
-int ncnp_decode_root(struct ncnp_struct_meta *meta,
-		     struct ncnp_rbuf in)
+static int ncnp_decode_root(struct ncnp_struct_meta *meta,
+			    struct ncnp_rbuf in)
 {
 	int ret;
 	size_t total_len = in.end - in.start;
@@ -384,7 +339,8 @@ int ncnp_decode_root(struct ncnp_struct_meta *meta,
 	return 0;
 }
 
-void ncnp_dump_struct(FILE *f, const struct ncnp_struct_meta *meta, int level)
+static void ncnp_dump_struct(FILE *f,
+			     const struct ncnp_struct_meta *meta, int level)
 {
 	fprintf(f, "%*sStruct, %d data words, %d pointers:\n",
 		level, "",
@@ -408,10 +364,10 @@ void ncnp_dump_struct(FILE *f, const struct ncnp_struct_meta *meta, int level)
 	}
 }
 
-void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level);
+static void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level);
 
-void ncnp_dump_list_recursive(FILE *f, const struct ncnp_list_meta *list,
-			      int level)
+static void ncnp_dump_list_recursive(FILE *f, const struct ncnp_list_meta *list,
+				     int level)
 {
 	if (list->elemtype == 0) {
 		fprintf(f, "%*sLIST of %d void elements\n", level, "",
@@ -459,7 +415,8 @@ void ncnp_dump_list_recursive(FILE *f, const struct ncnp_list_meta *list,
 	}
 }
 
-void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level)
+static void ncnp_dump_recursive(
+	FILE *f, const struct ncnp_struct_meta *meta, int level)
 {
 	ncnp_dump_struct(f, meta, level);
 
