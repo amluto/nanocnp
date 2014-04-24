@@ -266,7 +266,7 @@ unsigned char *ncnp_list_get_datum(const struct ncnp_list_meta *list, size_t i)
 	return (unsigned char *)list->data + i * list->nott1_stride_in_bytes;
 }
 
-void ncnp_list_get_1welement(struct ncnp_struct_oneword *dest,
+void ncnp_list_get_1welement(struct ncnp_struct_1w *dest,
 			     const struct ncnp_list_meta *list,
 			     size_t i)
 {
@@ -297,24 +297,23 @@ void ncnp_list_get_1welement(struct ncnp_struct_oneword *dest,
 	}
 }
 
-static int ncnp_decode_root(struct ncnp_struct_meta *meta,
-			    struct ncnp_rbuf in)
+int ncnp_decode_root_1w(struct ncnp_struct_1w *obj,
+			struct ncnp_rbuf in)
 {
 	int ret;
 	size_t total_len = in.end - in.start;
 	if (total_len < 1)
 		return -1;
 
-	ret = ncnp_decode_structptr(meta, in.start, in);
+	ret = ncnp_decode_structptr(&obj->meta, in.start, in);
 	if (ret == -1)
 		return -1;
 
-/*
-	ncnp_decode_data((struct ncnp_word *)(out + 1),
-			 out->n_data_words,
-			 in.start + offset + 1,
-			 n_data_words);
-*/
+	if (obj->meta.n_data_words)
+		obj->copy = *obj->meta.data;
+	else
+		obj->copy = (struct ncnp_word){{0}};
+
 
 	return 0;
 }
@@ -384,7 +383,7 @@ static void ncnp_dump_list_recursive(FILE *f, const struct ncnp_list_meta *list,
 		for (int i = 0; i < list->list_elems; i++) {
 			if (i != 0)
 				fprintf(f, "\n");
-			struct ncnp_struct_oneword obj;
+			struct ncnp_struct_1w obj;
 			ncnp_list_get_1welement(&obj, list, i);
 			ncnp_dump_recursive(f, &obj.meta, level + 1);
 		}
@@ -445,16 +444,13 @@ int main()
 	if (len % 8 != 0)
 		errx(1, "Input length is not a multiple of 8\n");
 
-	struct foo {
-		struct ncnp_struct_meta meta;
-		struct ncnp_word data[2];
-	} foo;
+	struct ncnp_struct_1w root;
 	struct ncnp_rbuf in = {(struct ncnp_word *)buf,
 			       (struct ncnp_word *)(buf + len)};
-	if (ncnp_decode_root(&foo.meta, in) != 0)
-		errx(1, "ncnp_decode_root failed");
+	if (ncnp_decode_root_1w(&root, in) != 0)
+		errx(1, "ncnp_decode_root_1w failed");
 
-	ncnp_dump_recursive(stdout, &foo.meta, 0);
+	ncnp_dump_recursive(stdout, &root.meta, 0);
 
 	return 0;
 }

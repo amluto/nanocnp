@@ -30,7 +30,7 @@ struct ncnp_struct_meta
 	/*
 	 * If n_pointers != 0, then this is guaranteed to point to a real
 	 * struct, and pointers in that struct may be followed.  Otherwise
-	 * this may be null if it's in, say, an ncnp_struct_oneword.
+	 * this may be null if it's in, say, an ncnp_struct_1w.
 	 */
 	ncnp_word_rptr data;
 
@@ -38,7 +38,7 @@ struct ncnp_struct_meta
 	uint16_t n_pointers;
 };
 
-struct ncnp_struct_oneword
+struct ncnp_struct_1w
 {
 	struct ncnp_struct_meta meta;
 	struct ncnp_word copy;  /* meta->data may point here */
@@ -60,9 +60,8 @@ int ncnp_decode_structptr(struct ncnp_struct_meta *meta,
 			  ncnp_word_rptr pptr,
 			  struct ncnp_rbuf targetbuf);
 
-int ncnp_deref_structptr(struct ncnp_struct_meta *meta,
-			 ncnp_word_rptr pptr,
-			 struct ncnp_rbuf targetbuf);
+int ncnp_decode_root_1w(struct ncnp_struct_1w *obj,
+			struct ncnp_rbuf in);
 
 int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 			ncnp_word_rptr pptr,
@@ -78,7 +77,7 @@ unsigned char *ncnp_list_get_datum(const struct ncnp_list_meta *list, size_t i);
  * are likely to be traversing untyped data, and performance
  * doesn't matter so much there.
  */
-void ncnp_list_get_1welement(struct ncnp_struct_oneword *dest,
+void ncnp_list_get_1welement(struct ncnp_struct_1w *dest,
 			     const struct ncnp_list_meta *list,
 			     size_t i);
 
