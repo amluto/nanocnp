@@ -242,8 +242,8 @@ void ncnp_list_get_1welement(struct ncnp_struct_1w *dest,
 	ncnp_assert(i < list->list_elems);
 
 	dest->copy = (struct ncnp_word){{0}};
-	dest->meta.n_pointers = list->n_pointers;
 	dest->meta.n_data_words = list->n_full_data_words;
+	dest->meta.n_pointers = list->n_pointers;
 
 	if (list->elemtype == 1) {
 		dest->copy.bytes[0] = (unsigned char)ncnp_list_get_bit(list, i);
