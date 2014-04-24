@@ -50,11 +50,11 @@ struct ncnp_list_meta
 	ncnp_word_rptr data;
 	unsigned int elemtype : 3;
 	uint32_t list_elems : 29;
-	uint32_t stride_in_bits;
+	uint32_t nott1_stride_in_bytes;
 
-	/* Only valid if elemtype == 7. */
-	uint16_t composite_n_data_words;
-	uint16_t composite_n_pointers;
+	/* Only valid if elemtype >= 5. */
+	uint16_t t567_n_data_words;
+	uint16_t t567_n_pointers;
 };
 
 static uint32_t ncnp_ptrval_type(uint64_t ptrval)
@@ -176,16 +176,45 @@ int ncnp_decode_structptr(struct ncnp_struct_meta *meta,
 struct ncnp_list_type
 {
 	unsigned int stride_in_bits;
+	uint16_t t567_n_data_words, t567_n_pointers;
 };
 
 static struct ncnp_list_type list_types[] = {
-	{0},
-	{1},
-	{8},
-	{16},
-	{32},
-	{64},
-	{64},
+	{	/* type 0: void */
+		.stride_in_bits = 0,
+		.t567_n_data_words = 0,
+		.t567_n_pointers = 0,
+	},
+	{	/* type 1: bits */
+		.stride_in_bits = 1,
+		.t567_n_data_words = 0,
+		.t567_n_pointers = 0,
+	},
+	{	/* type 2: bytes */
+		.stride_in_bits = 8,
+		.t567_n_data_words = 0,
+		.t567_n_pointers = 0,
+	},
+	{	/* type 3: 2-byte elements */
+		.stride_in_bits = 16,
+		.t567_n_data_words = 0,
+		.t567_n_pointers = 0,
+	},
+	{	/* type 4: 4-byte elements */
+		.stride_in_bits = 32,
+		.t567_n_data_words = 0,
+		.t567_n_pointers = 0,
+	},
+	{	/* type 5: data words */
+		.stride_in_bits = 64,
+		.t567_n_data_words = 1,
+		.t567_n_pointers = 0,
+	},
+	{	/* type 6: pointer words */
+		.stride_in_bits = 64,
+		.t567_n_data_words = 0,
+		.t567_n_pointers = 1,
+	},
 };
 
 int ncnp_decode_listptr(struct ncnp_list_meta *meta,
@@ -212,7 +241,8 @@ int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 		stride_in_bits = list_types[elemtype].stride_in_bits;
 		/* 2^29 words is more than 2^32 bits. */
 		total_words =
-			((uint64_t)ncnp_listptrval_len(ptrval) * stride_in_bits + 63) /
+			((uint64_t)ncnp_listptrval_len(ptrval) *
+			 list_types[elemtype].stride_in_bits + 63) /
 			64;
 	} else {
 		/* we'll fill in stride_in_bits later */
@@ -251,18 +281,23 @@ int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 		    (uint64_t)list_words * 64)
 			return -1;  /* List tag is inconsistent. */
 
-		meta->composite_n_data_words = ncnp_structptrval_n_data_words(tagval);
-		meta->composite_n_pointers = ncnp_structptrval_n_pointers(tagval);
+		meta->t567_n_data_words =
+			ncnp_structptrval_n_data_words(tagval);
+		meta->t567_n_pointers = ncnp_structptrval_n_pointers(tagval);
 	} else {
 		list_start = data_start;
 		list_elems = ncnp_listptrval_len(ptrval);
 		list_words = total_words;
+		meta->t567_n_data_words =
+			list_types[elemtype].t567_n_data_words;
+		meta->t567_n_pointers =
+			list_types[elemtype].t567_n_pointers;
 	}
 
 	meta->ptr_target_area = targetbuf;
 	meta->data = pptr + list_start;
 	meta->list_elems = list_elems;
-	meta->stride_in_bits = stride_in_bits;
+	meta->nott1_stride_in_bytes = stride_in_bits / 8;  /* not for type 1 */
 	meta->elemtype = elemtype;
 
 	return 0;
@@ -283,16 +318,16 @@ int ncnp_get_list_element(struct ncnp_struct_meta *meta,
 	if (list->elemtype == 1) {
 		// Not yet implemented
 		return -1;
-	} else if (list->elemtype == 6) {
-		meta->data = list->data + i;
-		meta->n_data_words = 0;
-		meta->n_pointers = 1;
-	} else if (list->elemtype == 7) {
-		meta->n_data_words = list->composite_n_data_words;
-		meta->n_pointers = list->composite_n_pointers;
-		meta->data = list->data + i * (list->stride_in_bits / 64);
-		ncnp_decode_data(copy_dest, copy_n_data_words,
-				 meta->data, meta->n_data_words);
+	} else if (list->elemtype >= 5) {
+		meta->data = (ncnp_word_rptr)
+			((const unsigned char *)list->data +
+			 i * list->nott1_stride_in_bytes);
+		meta->n_data_words = list->t567_n_data_words;
+		meta->n_pointers = list->t567_n_pointers;
+		if (copy_dest) {
+			ncnp_decode_data(copy_dest, copy_n_data_words,
+					 meta->data, meta->n_data_words);
+		}
 	} else {
 		/* Elements are byte-aligned and contain no pointers. */
 		meta->data = (void *)0;
@@ -374,10 +409,10 @@ void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level
 						meta->ptr_target_area) != 0) {
 				fprintf(f, "%*sbad listptr\n", level, "");
 			} else {
-				fprintf(f, "%*sLIST, type %d, len %u, stride %u bits\n", level, "",
+				fprintf(f, "%*sLIST, type %d, len %u, stride %u bytes\n", level, "",
 					list.elemtype,
 					list.list_elems,
-					list.stride_in_bits);
+					list.nott1_stride_in_bytes);
 				for (int i = 0; i < list.list_elems; i++) {
 					if (i != 0)
 						fprintf(f, "\n");
