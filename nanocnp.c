@@ -5,6 +5,7 @@
 #include <err.h>
 #include <stdio.h>
 #include <stdalign.h>
+#include <stdlib.h>
 
 #ifdef __clang__
 # undef alignas
@@ -56,6 +57,12 @@ struct ncnp_list_meta
 	uint16_t t567_n_data_words;
 	uint16_t t567_n_pointers;
 };
+
+static void ncnp_assert(bool condition)
+{
+	if (!condition)
+		abort();  /* for now */
+}
 
 static uint32_t ncnp_ptrval_type(uint64_t ptrval)
 {
@@ -303,8 +310,24 @@ int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 	return 0;
 }
 
+bool ncnp_list_get_bit(const struct ncnp_list_meta *list, size_t i)
+{
+	ncnp_assert(i < list->list_elems);
+	ncnp_assert(list->elemtype == 1);
 
-int ncnp_get_list_element(struct ncnp_struct_meta *meta,
+	uint64_t word = ncnp_load_word(list->data + i / 64);
+	return (word >> (i % 64)) & 1;
+}
+
+unsigned char *ncnp_list_get_datum(const struct ncnp_list_meta *list, size_t i)
+{
+	ncnp_assert(i < list->list_elems);
+	ncnp_assert(list->elemtype <= 5 && list->elemtype != 1);
+
+	return (unsigned char *)list->data + i * list->nott1_stride_in_bytes;
+}
+
+int ncnp_list_get_element(struct ncnp_struct_meta *meta,
 			  struct ncnp_word *copy_dest,
 			  uint16_t copy_n_data_words,
 			  const struct ncnp_list_meta *list,
@@ -385,6 +408,57 @@ void ncnp_dump_struct(FILE *f, const struct ncnp_struct_meta *meta, int level)
 	}
 }
 
+void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level);
+
+void ncnp_dump_list_recursive(FILE *f, const struct ncnp_list_meta *list,
+			      int level)
+{
+	if (list->elemtype == 0) {
+		fprintf(f, "%*sLIST of %d void elements\n", level, "",
+			(int)list->list_elems);
+		ncnp_assert(list->nott1_stride_in_bytes == 0);
+	} else if (list->elemtype == 1) {
+		fprintf(f, "%*sLIST of %d bits\n%*s", level, "",
+			(int)list->list_elems, level + 1, "");
+		if (list->list_elems == 0)
+			fprintf(f, "[empty]");
+		for (int i = 0; i < list->list_elems; i++)
+			fprintf(f, "%c",
+				(ncnp_list_get_bit(list, i) ? '1' : '0'));
+		fprintf(f, "\n");
+	} else if (list->elemtype <= 5) {
+		fprintf(f, "%*sLIST of %d %u-byte data elements\n",
+			level, "",
+			(int)list->list_elems, list->nott1_stride_in_bytes);
+		if (list->list_elems == 0)
+			fprintf(f, "[empty]");
+		for (int i = 0; i < list->list_elems; i++) {
+			fprintf(f, "%*s0x", level + 1, "");
+			unsigned char *val = ncnp_list_get_datum(list, i);
+			for (int j = list->nott1_stride_in_bytes - 1; j >= 0;
+			     j--)
+				fprintf(f, "%02X", val[j]);
+			fprintf(f, "\n");
+		}
+	} else {
+		fprintf(f, "%*sLIST of %d %s, stride %u bytes\n", level, "",
+			list->list_elems,
+			list->elemtype == 6 ? "pointers" : "structs",
+			list->nott1_stride_in_bytes);
+		for (int i = 0; i < list->list_elems; i++) {
+			if (i != 0)
+				fprintf(f, "\n");
+			struct ncnp_struct_meta obj;
+			if (ncnp_list_get_element(&obj, (void *)0,
+						  0, list, i) == 0) {
+				ncnp_dump_recursive(f, &obj, level + 1);
+			} else {
+				fprintf(f, "%*s [cannot display]\n", level, "");
+			}
+		}
+	}
+}
+
 void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level)
 {
 	ncnp_dump_struct(f, meta, level);
@@ -409,21 +483,7 @@ void ncnp_dump_recursive(FILE *f, const struct ncnp_struct_meta *meta, int level
 						meta->ptr_target_area) != 0) {
 				fprintf(f, "%*sbad listptr\n", level, "");
 			} else {
-				fprintf(f, "%*sLIST, type %d, len %u, stride %u bytes\n", level, "",
-					list.elemtype,
-					list.list_elems,
-					list.nott1_stride_in_bytes);
-				for (int i = 0; i < list.list_elems; i++) {
-					if (i != 0)
-						fprintf(f, "\n");
-					struct ncnp_struct_meta obj;
-					if (ncnp_get_list_element(&obj, (void *)0,
-								  0, &list, i) == 0) {
-						ncnp_dump_recursive(f, &obj, level + 1);
-					} else {
-						fprintf(f, "%*s [cannot display]\n", level, "");
-					}
-				}
+				ncnp_dump_list_recursive(f, &list, level);
 			}
 		} else if (type == 2) {
 			fprintf(f, "%*sFARPTR\n", level, "");
