@@ -49,21 +49,6 @@ static uint32_t ncnp_listptrval_len(uint64_t ptrval)
 	return (uint32_t)(ptrval >> 35);
 }
 
-static void ncnp_decode_data(struct ncnp_word *data_out,
-			     uint16_t n_words_out,
-			     const struct ncnp_word *data_in,
-			     uint16_t n_words_in)
-{
-	/* TODO: Handle endianness here? */
-	if (n_words_out <= n_words_in) {
-		memcpy(data_out, data_in, n_words_out * 8);
-	} else {
-		memcpy(data_out, data_in, n_words_in * 8);
-		memset(data_out + n_words_in, 0,
-		       (n_words_out - n_words_in) * 8);
-	}
-}
-
 static uint64_t ncnp_load_word(ncnp_word_rptr p)
 {
 	/* Unfortunately, neither gcc nor clang can optimize this:
@@ -138,44 +123,44 @@ int ncnp_decode_structptr(struct ncnp_struct_meta *meta,
 struct ncnp_list_type
 {
 	unsigned int stride_in_bits;
-	uint16_t t567_n_data_words, t567_n_pointers;
+	uint16_t n_full_data_words, n_pointers;
 };
 
 static struct ncnp_list_type list_types[] = {
 	{	/* type 0: void */
 		.stride_in_bits = 0,
-		.t567_n_data_words = 0,
-		.t567_n_pointers = 0,
+		.n_full_data_words = 0,
+		.n_pointers = 0,
 	},
 	{	/* type 1: bits */
 		.stride_in_bits = 1,
-		.t567_n_data_words = 0,
-		.t567_n_pointers = 0,
+		.n_full_data_words = 0,
+		.n_pointers = 0,
 	},
 	{	/* type 2: bytes */
 		.stride_in_bits = 8,
-		.t567_n_data_words = 0,
-		.t567_n_pointers = 0,
+		.n_full_data_words = 0,
+		.n_pointers = 0,
 	},
 	{	/* type 3: 2-byte elements */
 		.stride_in_bits = 16,
-		.t567_n_data_words = 0,
-		.t567_n_pointers = 0,
+		.n_full_data_words = 0,
+		.n_pointers = 0,
 	},
 	{	/* type 4: 4-byte elements */
 		.stride_in_bits = 32,
-		.t567_n_data_words = 0,
-		.t567_n_pointers = 0,
+		.n_full_data_words = 0,
+		.n_pointers = 0,
 	},
 	{	/* type 5: data words */
 		.stride_in_bits = 64,
-		.t567_n_data_words = 1,
-		.t567_n_pointers = 0,
+		.n_full_data_words = 1,
+		.n_pointers = 0,
 	},
 	{	/* type 6: pointer words */
 		.stride_in_bits = 64,
-		.t567_n_data_words = 0,
-		.t567_n_pointers = 1,
+		.n_full_data_words = 0,
+		.n_pointers = 1,
 	},
 };
 
@@ -243,17 +228,16 @@ int ncnp_decode_listptr(struct ncnp_list_meta *meta,
 		    (uint64_t)list_words * 64)
 			return -1;  /* List tag is inconsistent. */
 
-		meta->t567_n_data_words =
+		meta->n_full_data_words =
 			ncnp_structptrval_n_data_words(tagval);
-		meta->t567_n_pointers = ncnp_structptrval_n_pointers(tagval);
+		meta->n_pointers = ncnp_structptrval_n_pointers(tagval);
 	} else {
 		list_start = data_start;
 		list_elems = ncnp_listptrval_len(ptrval);
 		list_words = total_words;
-		meta->t567_n_data_words =
-			list_types[elemtype].t567_n_data_words;
-		meta->t567_n_pointers =
-			list_types[elemtype].t567_n_pointers;
+		meta->n_full_data_words =
+			list_types[elemtype].n_full_data_words;
+		meta->n_pointers = list_types[elemtype].n_pointers;
 	}
 
 	meta->ptr_target_area = targetbuf;
@@ -282,39 +266,35 @@ unsigned char *ncnp_list_get_datum(const struct ncnp_list_meta *list, size_t i)
 	return (unsigned char *)list->data + i * list->nott1_stride_in_bytes;
 }
 
-int ncnp_list_get_element(struct ncnp_struct_meta *meta,
-			  struct ncnp_word *copy_dest,
-			  uint16_t copy_n_data_words,
-			  const struct ncnp_list_meta *list,
-			  size_t i)
+void ncnp_list_get_1welement(struct ncnp_struct_oneword *dest,
+			     const struct ncnp_list_meta *list,
+			     size_t i)
 {
-	if (i >= list->list_elems)
-		return -1;
+	ncnp_assert(i < list->list_elems);
 
-	meta->ptr_target_area = list->ptr_target_area;
+	dest->copy = (struct ncnp_word){{0}};
+	dest->meta.n_pointers = list->n_pointers;
+	dest->meta.n_data_words = list->n_full_data_words;
 
 	if (list->elemtype == 1) {
-		// Not yet implemented
-		return -1;
-	} else if (list->elemtype >= 5) {
-		meta->data = (ncnp_word_rptr)
-			((const unsigned char *)list->data +
-			 i * list->nott1_stride_in_bytes);
-		meta->n_data_words = list->t567_n_data_words;
-		meta->n_pointers = list->t567_n_pointers;
-		if (copy_dest) {
-			ncnp_decode_data(copy_dest, copy_n_data_words,
-					 meta->data, meta->n_data_words);
-		}
+		dest->copy.bytes[0] = (unsigned char)ncnp_list_get_bit(list, i);
+		dest->meta.data = (void *)0;
+	} else if (list->elemtype <= 5) {
+		/* Give the optimizer lots of help. */
+		size_t bytes_to_copy = list->nott1_stride_in_bytes;
+		if (bytes_to_copy > 8)
+			__builtin_unreachable();
+		memcpy(&dest->copy, ncnp_list_get_datum(list, i),
+		       bytes_to_copy);
+		dest->meta.data = (void *)0;
 	} else {
-		/* Elements are byte-aligned and contain no pointers. */
-		meta->data = (void *)0;
-		meta->n_data_words = 1;  /* A lie. */
-		meta->n_pointers = 0;
-		/* TODO: Copy it. */
+		dest->meta.ptr_target_area = list->ptr_target_area;
+		dest->meta.data = (ncnp_word_rptr)
+			((unsigned char *)list->data +
+			 i * list->nott1_stride_in_bytes);
+		if (list->n_full_data_words)
+			dest->copy = *dest->meta.data;
 	}
-
-	return 0;
 }
 
 static int ncnp_decode_root(struct ncnp_struct_meta *meta,
@@ -404,13 +384,9 @@ static void ncnp_dump_list_recursive(FILE *f, const struct ncnp_list_meta *list,
 		for (int i = 0; i < list->list_elems; i++) {
 			if (i != 0)
 				fprintf(f, "\n");
-			struct ncnp_struct_meta obj;
-			if (ncnp_list_get_element(&obj, (void *)0,
-						  0, list, i) == 0) {
-				ncnp_dump_recursive(f, &obj, level + 1);
-			} else {
-				fprintf(f, "%*s [cannot display]\n", level, "");
-			}
+			struct ncnp_struct_oneword obj;
+			ncnp_list_get_1welement(&obj, list, i);
+			ncnp_dump_recursive(f, &obj.meta, level + 1);
 		}
 	}
 }
