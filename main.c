@@ -79,9 +79,9 @@ static void ncnp_dump_list_recursive(FILE *f, const struct ncnp_list_meta *list,
 		for (int i = 0; i < list->list_elems; i++) {
 			if (i != 0)
 				fprintf(f, "\n");
-			struct ncnp_struct_1w obj;
-			ncnp_list_get_1welement(&obj, list, i);
-			ncnp_dump_recursive(f, &obj.meta, level + 1);
+			struct ncnp_struct_meta obj;
+			ncnp_list_get_struct(&obj, list, i);
+			ncnp_dump_recursive(f, &obj, level + 1);
 		}
 	}
 }
@@ -140,13 +140,13 @@ int main()
 	if (len % 8 != 0)
 		errx(1, "Input length is not a multiple of 8\n");
 
-	struct ncnp_struct_1w root;
+	struct ncnp_struct_meta root;
 	struct ncnp_rbuf in = {(struct ncnp_word *)buf,
 			       (struct ncnp_word *)(buf + len)};
-	if (ncnp_decode_root_1w(&root, in) != 0)
-		errx(1, "ncnp_decode_root_1w failed");
+	if (ncnp_decode_root(&root, in) != 0)
+		errx(1, "ncnp_decode_root failed");
 
-	ncnp_dump_recursive(stdout, &root.meta, 0);
+	ncnp_dump_recursive(stdout, &root, 0);
 
 	return 0;
 }

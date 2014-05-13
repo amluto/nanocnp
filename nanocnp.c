@@ -235,54 +235,36 @@ unsigned char *ncnp_list_get_datum(const struct ncnp_list_meta *list, size_t i)
 	return (unsigned char *)list->data + i * list->nott1_stride_in_bytes;
 }
 
-void ncnp_list_get_1welement(struct ncnp_struct_1w *dest,
-			     const struct ncnp_list_meta *list,
-			     size_t i)
+void ncnp_list_get_struct(struct ncnp_struct_meta *dest,
+			  const struct ncnp_list_meta *list,
+			  size_t i)
 {
-	ncnp_assert(i < list->list_elems);
+       ncnp_assert(i < list->list_elems);
 
-	dest->copy = (struct ncnp_word){{0}};
-	dest->meta.n_pointers = list->n_pointers;
-	dest->meta.n_data_words = list->n_full_data_words;
+       /*
+	* TODO: This works for types 5, 6, and 7, but it should only
+	* be used for type 7.
+	*/
+       dest->n_pointers = list->n_pointers;
+       dest->n_data_words = list->n_full_data_words;
 
-	if (list->elemtype == 1) {
-		dest->copy.bytes[0] = (unsigned char)ncnp_list_get_bit(list, i);
-		dest->meta.data = (void *)0;
-	} else if (list->elemtype <= 5) {
-		/* Give the optimizer lots of help. */
-		size_t bytes_to_copy = list->nott1_stride_in_bytes;
-		if (bytes_to_copy > 8)
-			__builtin_unreachable();
-		memcpy(&dest->copy, ncnp_list_get_datum(list, i),
-		       bytes_to_copy);
-		dest->meta.data = (void *)0;
-	} else {
-		dest->meta.ptr_target_area = list->ptr_target_area;
-		dest->meta.data = (ncnp_word_rptr)
-			((unsigned char *)list->data +
-			 i * list->nott1_stride_in_bytes);
-		if (list->n_full_data_words)
-			dest->copy = *dest->meta.data;
-	}
+       dest->ptr_target_area = list->ptr_target_area;
+       dest->data = (ncnp_word_rptr)
+	       ((unsigned char *)list->data +
+		i * list->nott1_stride_in_bytes);
 }
 
-int ncnp_decode_root_1w(struct ncnp_struct_1w *obj,
-			struct ncnp_rbuf in)
+int ncnp_decode_root(struct ncnp_struct_meta *obj,
+		     struct ncnp_rbuf in)
 {
 	int ret;
 	size_t total_len = in.end - in.start;
 	if (total_len < 1)
 		return -1;
 
-	ret = ncnp_decode_structptr(&obj->meta, in.start, in);
+	ret = ncnp_decode_structptr(obj, in.start, in);
 	if (ret == -1)
 		return -1;
-
-	if (obj->meta.n_data_words)
-		obj->copy = *obj->meta.data;
-	else
-		obj->copy = (struct ncnp_word){{0}};
-
 
 	return 0;
 }
