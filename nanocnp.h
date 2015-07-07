@@ -59,28 +59,27 @@ struct ncnp_list_meta
 
 static inline uint64_t ncnp_load_word(ncnp_word_rptr p)
 {
-	/* Unfortunately, neither gcc nor clang can optimize this:
-
-	return ((uint64_t)p.bytes[0] |
-		(uint64_t)p.bytes[1] << 8 |
-		(uint64_t)p.bytes[2] << 16 |
-		(uint64_t)p.bytes[3] << 24 |
-		(uint64_t)p.bytes[4] << 32 |
-		(uint64_t)p.bytes[5] << 40 |
-		(uint64_t)p.bytes[6] << 48 |
-		(uint64_t)p.bytes[7] << 56);
-	*/
+	return ((uint64_t)p->bytes[0] |
+		(uint64_t)p->bytes[1] << 8 |
+		(uint64_t)p->bytes[2] << 16 |
+		(uint64_t)p->bytes[3] << 24 |
+		(uint64_t)p->bytes[4] << 32 |
+		(uint64_t)p->bytes[5] << 40 |
+		(uint64_t)p->bytes[6] << 48 |
+		(uint64_t)p->bytes[7] << 56);
 
 	/*
 	 * This does not invoke undefined behavior, and it is correct
-	 * on any little-endian architecture.
-	 */
+	 * on any little-endian architecture.  Gcc 5.0 and above
+	 * can optimize the code above, though, so we don't need
+	 * it.
 	union {
 		uint64_t val;
 		unsigned char bytes[8];
 	} ret;
 	memcpy(&ret.bytes, p, 8);
 	return ret.val;
+	*/
 }
 
 static uint32_t ncnp_ptrval_type(uint64_t ptrval)
